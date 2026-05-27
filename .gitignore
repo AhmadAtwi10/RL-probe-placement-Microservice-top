@@ -1,0 +1,23 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+RL-Probe-Placement-Microservice-top-venv/
+env/
+
+# Logs
+*.log
+*.out
+
+# Checkpoints and results (optional - you might want to keep these)
+# checkpoints/
+# results/
+
+# IDE
+.vscode/
+.idea/
