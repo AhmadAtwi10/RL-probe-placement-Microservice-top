@@ -83,7 +83,8 @@ def _default_env(K: int = 10) -> ProbeEnvConfig:
     return ProbeEnvConfig(
         episode_length          = 100,   # T — timesteps per episode
         blind_violation_budget  = K,     # K — set by curriculum
-        n_failures              = 2,     # failure events injected per episode
+        min_failures              = 0,     # minimum failure events injected per episode
+        max_failures              = 3,     # maximum failure events injected per episode
         window_size             = 4,     # N — SLI rolling history window
         graph_seed              = None,  # None = non-deterministic across episodes
         workload_seed           = None,
@@ -170,11 +171,12 @@ def _debug_config() -> TrainerConfig:
         seed              = 42,
         log_dir           = "logs",
         checkpoint_dir    = "checkpoints",
-        use_tensorboard   = False,
+        use_tensorboard   = True,
         env_config        = ProbeEnvConfig(
             episode_length         = 10,
             blind_violation_budget = 100,
-            n_failures             = 0,
+            min_failures             = 0,
+            max_failures             = 0, # no failures, just for test
             window_size            = 4,
             reward_config          = _default_reward(),
         ),
@@ -313,7 +315,8 @@ def describe(cfg: TrainerConfig) -> None:
     env = cfg.env_config
     print(f"    episode_length   : {env.episode_length}")
     print(f"    initial K        : {env.blind_violation_budget}")
-    print(f"    n_failures       : {env.n_failures}")
+    print(f"    min_failures     : {env.min_failures}")
+    print(f"    max_failures     : {env.max_failures}")
     print(f"    window_size      : {env.window_size}")
     print(f"    diurnal_ampl.    : {env.diurnal_amplitude}")
     r = env.reward_config

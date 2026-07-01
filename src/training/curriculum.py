@@ -81,7 +81,7 @@ class CurriculumConfig:
     lr_start:             float     = 3e-4
     lr_end:               float     = 1e-4
     promotion_threshold:  float     = 0.5
-    promotion_window:     int       = 10
+    promotion_window:     int       = 20
 
     def __post_init__(self):
         assert len(self.k_stages) >= 1,      "Need at least one K stage"

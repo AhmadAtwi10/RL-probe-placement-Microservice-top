@@ -107,7 +107,7 @@ class ProbeEnvConfig:
         Amplitude of the diurnal sine pattern in SLIGenerator.
     """
     episode_length:         int         = 100
-    blind_violation_budget: int         = 10
+    blind_violation_budget: int         = 50
     n_failures:             int         = 2
     reward_config:          RewardConfig = field(default_factory=RewardConfig)
     window_size:            int         = 4
