@@ -115,11 +115,39 @@ class Logger:
         self._jsonl_file.write(json.dumps(record) + "\n")
         self._jsonl_file.flush()
 
-        # TensorBoard
+        # TensorBoard — grouped into sections using tag/name format
         if self._tb_writer is not None:
-            for key, val in record.items():
-                if isinstance(val, (int, float)):
-                    self._tb_writer.add_scalar(key, val, iteration)
+            # ── Episode metrics ──────────────────────────────────────────
+            ep = episode_metrics
+            self._tb_writer.add_scalar("episode/mean_reward",      ep.get("mean_reward",      0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_weighted_coverage",    ep.get("mean_coverage",    0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_blind_rate",  ep.get("mean_blind_rate",  0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_probe_count", ep.get("mean_probe_count", 0.0), iteration)
+            self._tb_writer.add_scalar("episode/survival_rate",    ep.get("survival_rate",    0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_ep_len",      ep.get("mean_ep_len",      0.0), iteration)
+            self._tb_writer.add_scalar("episode/n_episodes",       ep.get("n_episodes",       0),   iteration)
+            self._tb_writer.add_scalar("episode/mean_num_nodes",     ep.get("mean_num_nodes",     0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_num_probeable", ep.get("mean_num_probeable", 0.0), iteration)
+            self._tb_writer.add_scalar("episode/mean_detection_rate",ep.get("mean_detection_rate", 1.0), iteration)
+            # ── PPO losses ───────────────────────────────────────────────
+            self._tb_writer.add_scalar("ppo/total_loss",    ppo_stats.total_loss,    iteration)
+            self._tb_writer.add_scalar("ppo/policy_loss",   ppo_stats.policy_loss,   iteration)
+            self._tb_writer.add_scalar("ppo/value_loss",    ppo_stats.value_loss,    iteration)
+            self._tb_writer.add_scalar("ppo/entropy",       ppo_stats.entropy,       iteration)
+            # ── PPO diagnostics ──────────────────────────────────────────
+            self._tb_writer.add_scalar("ppo/approx_kl",     ppo_stats.approx_kl,     iteration)
+            self._tb_writer.add_scalar("ppo/clip_fraction", ppo_stats.clip_fraction, iteration)
+            self._tb_writer.add_scalar("ppo/explained_var", ppo_stats.explained_var, iteration)
+            # ── Curriculum ───────────────────────────────────────────────
+            ci = curriculum_info
+            self._tb_writer.add_scalar("curriculum/K",             ci.get("K",            50),           iteration)
+            self._tb_writer.add_scalar("curriculum/stage",         ci.get("stage",        0),            iteration)
+            self._tb_writer.add_scalar("curriculum/learning_rate", ci.get("lr",           3e-4),         iteration)
+            self._tb_writer.add_scalar("curriculum/entropy_coef",  ci.get("entropy_coef", 0.05),         iteration)
+            self._tb_writer.add_scalar("curriculum/promoted",      float(ci.get("promoted", False)),     iteration)
+            # ── Meta ─────────────────────────────────────────────────────
+            self._tb_writer.add_scalar("meta/env_steps", env_steps, iteration)
+            self._tb_writer.add_scalar("meta/elapsed_s", elapsed,   iteration)
 
     def print_summary(
         self,
@@ -138,8 +166,12 @@ class Logger:
             f"[{iteration:5d}/{total_iters}] ({pct:5.1f}%) "
             f"steps={env_steps:7,d} | "
             f"R={episode_metrics.get('mean_reward', 0.0):7.3f} | "
-            f"cov={episode_metrics.get('mean_coverage', 0.0):.3f} | "
+            f"Wcov={episode_metrics.get('mean_coverage', 0.0):.3f} | "
             f"blind={episode_metrics.get('mean_blind_rate', 0.0):.3f} | "
+            f"probes={episode_metrics.get('mean_probe_count', 0.0):.1f}"
+            f"/{episode_metrics.get('mean_num_probeable', 0.0):.0f}"
+            f"(n={episode_metrics.get('mean_num_nodes', 0.0):.0f}) | "
+            f"surv={episode_metrics.get('survival_rate', 0.0):.2f} | "
             f"L={ppo_stats.total_loss:7.4f} "
             f"(pol={ppo_stats.policy_loss:.4f} "
             f"val={ppo_stats.value_loss:.4f} "
@@ -149,6 +181,7 @@ class Logger:
             f"K={curriculum_info.get('K', '?')} "
             f"stage={curriculum_info.get('stage', 0)} | "
             f"t={elapsed:.0f}s"
+            f"det={episode_metrics.get('mean_detection_rate', 1.0):.3f} | "
         )
 
     def close(self) -> None:

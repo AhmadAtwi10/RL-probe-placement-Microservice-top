@@ -105,7 +105,8 @@ def evaluate(
         env_cfg = ProbeEnvConfig(
             episode_length         = config.env_config.episode_length,
             blind_violation_budget = config.env_config.blind_violation_budget,
-            n_failures             = config.env_config.n_failures,
+            min_failures           = config.env_config.min_failures,
+            max_failures           = config.env_config.max_failures,
             reward_config          = config.env_config.reward_config,
             window_size            = config.env_config.window_size,
             graph_seed             = ep_seed,

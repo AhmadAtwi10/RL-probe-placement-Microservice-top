@@ -129,6 +129,7 @@ class TrainerConfig:
     checkpoint_dir:    str  = "checkpoints"
     use_tensorboard:   bool = False
     resume_from:       Optional[str] = None
+    debug_print:       bool = False  # print per-step trace during collect_rollout
 
     # Sub-configs
     env_config:        ProbeEnvConfig  = field(default_factory=ProbeEnvConfig)
@@ -157,26 +158,36 @@ class EpisodeTracker:
         self.completed: List[dict] = []
 
     def reset_current(self):
-        self._reward   = 0.0
-        self._length   = 0
-        self._coverage = 0.0   # fraction of steps with >= 1 SLO covered
-        self._blind    = 0.0   # fraction of steps with >= 1 blind violation
+        self._reward        = 0.0
+        self._length        = 0
+        self._coverage      = 0.0   # fraction of steps with >= 1 SLO covered
+        self._blind         = 0.0   # fraction of steps with >= 1 blind violation
+        self._probe_sum     = 0.0   # sum of probe counts per step
+        self._survived      = False # did this episode reach T without exceeding K
+        self._num_nodes     = 0     # present nodes in this episode graph
+        self._num_probeable = 0     # probeable nodes in this episode graph
 
     def step(self, reward: float, info: dict) -> None:
-        self._reward   += reward
-        self._length   += 1
+        self._reward     += reward
+        self._length     += 1
         rb = info.get("reward_breakdown", None)
         if rb is not None:
             self._coverage += 1.0 if len(rb.covered_slos) > 0 else 0.0
             self._blind    += 1.0 if len(rb.blind_slos)   > 0 else 0.0
+        probe_set = info.get("probe_set", set())
+        self._probe_sum += len(probe_set)
 
-    def end_episode(self) -> None:
+    def end_episode(self, survived: bool = False) -> None:
         L = max(self._length, 1)
         self.completed.append({
-            "reward":     self._reward,
-            "length":     self._length,
-            "coverage":   self._coverage / L,
-            "blind_rate": self._blind    / L,
+            "reward":        self._reward,
+            "length":        self._length,
+            "coverage":      self._coverage / L,
+            "blind_rate":    self._blind    / L,
+            "probe_count":   self._probe_sum / L,
+            "survived":      float(survived),
+            "num_nodes":     self._num_nodes,
+            "num_probeable": self._num_probeable,
         })
         self.reset_current()
 
@@ -184,18 +195,26 @@ class EpisodeTracker:
         """Return mean stats over all completed episodes since last call."""
         if not self.completed:
             return {
-                "mean_reward":     0.0,
-                "mean_ep_len":     0.0,
-                "mean_coverage":   0.0,
-                "mean_blind_rate": 0.0,
-                "n_episodes":      0,
+                "mean_reward":        0.0,
+                "mean_ep_len":        0.0,
+                "mean_coverage":      0.0,
+                "mean_blind_rate":    0.0,
+                "mean_probe_count":   0.0,
+                "survival_rate":      0.0,
+                "mean_num_nodes":     0.0,
+                "mean_num_probeable": 0.0,
+                "n_episodes":         0,
             }
         result = {
-            "mean_reward":     float(np.mean([e["reward"]     for e in self.completed])),
-            "mean_ep_len":     float(np.mean([e["length"]     for e in self.completed])),
-            "mean_coverage":   float(np.mean([e["coverage"]   for e in self.completed])),
-            "mean_blind_rate": float(np.mean([e["blind_rate"] for e in self.completed])),
-            "n_episodes":      len(self.completed),
+            "mean_reward":        float(np.mean([e["reward"]        for e in self.completed])),
+            "mean_ep_len":        float(np.mean([e["length"]        for e in self.completed])),
+            "mean_coverage":      float(np.mean([e["coverage"]      for e in self.completed])),
+            "mean_blind_rate":    float(np.mean([e["blind_rate"]    for e in self.completed])),
+            "mean_probe_count":   float(np.mean([e["probe_count"]   for e in self.completed])),
+            "survival_rate":      float(np.mean([e["survived"]      for e in self.completed])),
+            "mean_num_nodes":     float(np.mean([e["num_nodes"]     for e in self.completed])),
+            "mean_num_probeable": float(np.mean([e["num_probeable"] for e in self.completed])),
+            "n_episodes":         len(self.completed),
         }
         self.completed.clear()
         return result
@@ -398,10 +417,27 @@ class Trainer:
             # ── Track episode stats ───────────────────────────────────
             self.tracker.step(reward, info)
 
+            # ── Per-step debug print (active during debugging) ────────
+            if getattr(self.cfg, 'debug_print', False):
+                print(
+                    f"t={self.env._t:3d} | "
+                    f"{info['action_str']:<32} | "
+                    f"probes={len(info['probe_set']):2d}/{self._ep.num_probeable} "
+                    f"(nodes={self._ep.num_nodes}) | "
+                    f"R={reward:+.3f} "
+                    f"(obs={info['reward_breakdown'].observability:+.3f} "
+                    f"blind={info['reward_breakdown'].blind_violation:+.3f}) | "
+                    f"cum_blind={info['cum_blind']}"
+                )
+
             # ── Episode boundary ──────────────────────────────────────
             if done:
-                self.tracker.end_episode()
+                survived = truncated and not terminated
+                self.tracker.end_episode(survived=survived)
                 self._reset_env()
+                # Record graph size for the new episode
+                self.tracker._num_nodes     = self._ep.num_nodes
+                self.tracker._num_probeable = self._ep.num_probeable
                 last_value = 0.0
             else:
                 self._obs = obs_next
@@ -424,3 +460,6 @@ class Trainer:
         """Reset env and update obs/ep state."""
         self._obs, _ = self.env.reset()
         self._ep     = self.env.current_graph
+        # Keep tracker informed of current episode graph size
+        self.tracker._num_nodes     = self._ep.num_nodes
+        self.tracker._num_probeable = self._ep.num_probeable

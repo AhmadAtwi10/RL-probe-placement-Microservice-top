@@ -408,14 +408,19 @@ class PolicyNetwork(nn.Module):
         value    : float   V(s)
         entropy  : float   H(π(·|s))
         """
-        # Build tensors from obs dict
-        nf  = torch.tensor(obs_dict["node_features"], dtype=torch.float32)
-        ei  = torch.tensor(obs_dict["edge_index"],    dtype=torch.int64)
-        sh  = torch.tensor(obs_dict["slo_health"],    dtype=torch.float32)
-        am  = torch.tensor(obs_dict["action_mask"],   dtype=torch.bool)
+        # Detect device from policy parameters
+        device = next(self.parameters()).device
+
+        # Build tensors and send to same device as policy
+        nf  = torch.tensor(obs_dict["node_features"], dtype=torch.float32).to(device)
+        ei  = torch.tensor(obs_dict["edge_index"],    dtype=torch.int64).to(device)
+        sh  = torch.tensor(obs_dict["slo_health"],    dtype=torch.float32).to(device)
+        am  = torch.tensor(obs_dict["action_mask"],   dtype=torch.bool).to(device)
 
         nm, em = build_masks(episode_graph)
-        pi     = build_probeable_indices(episode_graph)
+        nm = nm.to(device)
+        em = em.to(device)
+        pi = build_probeable_indices(episode_graph).to(device)
 
         out = self.forward(nf, ei, nm, em, sh, am, pi)
 

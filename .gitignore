@@ -15,8 +15,9 @@ env/
 *.out
 
 # Checkpoints and results (optional - you might want to keep these)
-# checkpoints/
-# results/
+checkpoints/
+results/
+logs/
 
 # IDE
 .vscode/

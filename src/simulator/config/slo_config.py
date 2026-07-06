@@ -68,7 +68,7 @@ SLO_CATALOG: List[SLO] = [
         metric="search_latency_p99",
         threshold=200.0,   # ms
         op="<=",
-        weight=0.5,
+        weight= 1, #0.5 currently set to 1 to have all weights are equal,
         nodes=["search"],
     ),
     SLO(
@@ -76,7 +76,7 @@ SLO_CATALOG: List[SLO] = [
         metric="processing_time_p99",
         threshold=50.0,    # ms
         op="<=",
-        weight=0.3,
+        weight= 1,  #0.3,
         nodes=["geo"],
     ),
     SLO(
@@ -84,7 +84,7 @@ SLO_CATALOG: List[SLO] = [
         metric="processing_time_p99",
         threshold=300.0,   # ms
         op="<=",
-        weight=0.4,
+        weight= 1,  #0.4,
         nodes=["reservation"],
     ),
     SLO(
@@ -92,7 +92,7 @@ SLO_CATALOG: List[SLO] = [
         metric="failure_rate",
         threshold=0.5,     # percent
         op="<=",
-        weight=0.5,
+        weight= 1,  #0.5,
         nodes=["reservation"],
     ),
     SLO(
@@ -100,7 +100,7 @@ SLO_CATALOG: List[SLO] = [
         metric="query_latency_p99",
         threshold=10.0,    # ms
         op="<=",
-        weight=0.2,
+        weight= 1,  #0.2,
         nodes=["mongodb-rate"],
     ),
     SLO(
@@ -108,7 +108,7 @@ SLO_CATALOG: List[SLO] = [
         metric="hit_rate",
         threshold=90.0,    # percent
         op=">=",
-        weight=0.2,
+        weight= 1,  #0.2,
         nodes=["memcached-rate"],
     ),
 ]

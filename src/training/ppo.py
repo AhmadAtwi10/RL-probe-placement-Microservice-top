@@ -88,11 +88,11 @@ class PPOConfig:
         If True, normalise advantages to zero mean / unit std within
         each rollout before the PPO update.  Standard: True.
     """
-    learning_rate:        float = 3e-4
+    learning_rate:        float = 1e-4
     n_epochs:             int   = 4
     batch_size:           int   = 64
     clip_epsilon:         float = 0.2
-    value_coef:           float = 0.5
+    value_coef:           float = 0.05
     entropy_coef:         float = 0.01
     max_grad_norm:        float = 0.5
     clip_value_loss:      bool  = True

@@ -56,6 +56,7 @@ Public API
     .current_graph    → EpisodeGraph
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -93,8 +94,13 @@ class ProbeEnvConfig:
         T — maximum number of timesteps per episode.
     blind_violation_budget : int
         K — cumulative blind violations allowed before failure termination.
-    n_failures : int
-        Number of failure events injected per episode by the FailureInjector.
+    min_failures : int
+        Minimum number of failure events injected per episode (inclusive).
+        Set to 0 to allow failure-free episodes.
+    max_failures : int
+        Maximum number of failure events injected per episode (inclusive).
+        Actual count sampled uniformly in [min_failures, max_failures]
+        at each reset(), seeded by workload_seed for reproducibility.
     reward_config : RewardConfig
         λ, μ, ρ and terminal bonus/penalty values.
     window_size : int
@@ -108,7 +114,8 @@ class ProbeEnvConfig:
     """
     episode_length:         int         = 100
     blind_violation_budget: int         = 50
-    n_failures:             int         = 2
+    min_failures:           int         = 0
+    max_failures:           int         = 3
     reward_config:          RewardConfig = field(default_factory=RewardConfig)
     window_size:            int         = 4
     graph_seed:             Optional[int] = None
@@ -118,7 +125,8 @@ class ProbeEnvConfig:
     def __post_init__(self):
         assert self.episode_length         > 0
         assert self.blind_violation_budget >= 0
-        assert self.n_failures             >= 0
+        assert self.min_failures >= 0
+        assert self.max_failures >= self.min_failures
         assert self.window_size            >= 1
 
 
@@ -236,7 +244,7 @@ class ProbeEnv(gym.Env):
             Initial observation (at t=0, before any action).
         info : dict
             Diagnostic info: episode_id, present_nodes, probeable_nodes,
-            coverable_slos, n_failures.
+            coverable_slos, min_failures, max_failures.
         """
         super().reset(seed=seed)
 
@@ -263,10 +271,12 @@ class ProbeEnv(gym.Env):
         self._traces = gen.full_traces()
 
         # ── 4. Inject failures ────────────────────────────────────────────
-        if self.cfg.n_failures > 0:
+        _rng = random.Random(workload_seed)
+        n = _rng.randint(self.cfg.min_failures, self.cfg.max_failures)
+        if n > 0:
             fi     = FailureInjector(self._ep, episode_length=self.cfg.episode_length,
                                      seed=workload_seed)
-            events = fi.sample_failures(n_failures=self.cfg.n_failures)
+            events = fi.sample_failures(n_failures=n)
             self._traces = fi.apply(self._traces, events)
         else:
             events = []

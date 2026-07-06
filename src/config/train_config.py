@@ -71,7 +71,7 @@ from src.evaluation.evaluate import EvalConfig
 
 def _default_reward() -> RewardConfig:
     return RewardConfig(
-        lam             = 0.05,    # probe overhead penalty per active probe
+        lam             = 0.15,    # probe overhead penalty per active probe
         mu              = 2.0,     # blind violation penalty weight
         rho             = 0.5,     # removal risk sensitivity
         terminal_bonus  = 5.0,     # reward for surviving T steps
@@ -117,7 +117,7 @@ def _default_ppo() -> PPOConfig:
         n_epochs             = 4,      # PPO epochs per rollout
         batch_size           = 64,     # mini-batch size
         clip_epsilon         = 0.2,    # ratio clipping range
-        value_coef           = 0.5,    # c1 — value loss weight
+        value_coef           = 0.05,    # c1 — value loss weight
         entropy_coef         = 0.01,   # c2 — entropy bonus (annealed by curriculum)
         max_grad_norm        = 0.5,    # gradient clipping
         clip_value_loss      = True,
@@ -134,7 +134,7 @@ def _default_curriculum() -> CurriculumConfig:
         entropy_coef_end    = 0.005,   # low exploration at end
         lr_start            = 3e-4,    # initial learning rate
         lr_end              = 1e-4,    # final learning rate (cosine decay)
-        promotion_threshold = 0.5,     # min mean reward to advance stage
+        promotion_threshold = 30,     # min mean reward to advance stage
         promotion_window    = 20,      # consecutive iterations above threshold
     )
 
@@ -192,17 +192,25 @@ def _debug_config() -> TrainerConfig:
 
 def _fast_config() -> TrainerConfig:
     """
-    Moderate config for quick experiments (~10 minutes on CPU).
+    Moderate config for quick experiments on GPU (~5-10 minutes).
     Enough iterations to see the policy begin to learn.
+
+    Key calibrations vs original:
+    - rollout_len 256 → 512: more complete episodes per rollout (~5 vs ~2.5)
+    - value_coef 0.5 → 0.05: reward scale ~20-85 per episode; large returns
+      cause value loss explosion without scaling down the critic coefficient
+    - promotion_threshold 0.3 → 30.0: calibrated to actual reward scale
+    - promotion_window 10 → 20: require sustained performance before promoting
+    - batch_size 32 → 64: more stable gradient estimates
     """
     return TrainerConfig(
         run_name          = "fast",
         total_iterations  = 100,
-        rollout_len       = 256,
+        rollout_len       = 512,
         log_interval      = 10,
         eval_interval     = 50,
         save_interval     = 50,
-        device            = "cpu",
+        device            = "cpu", # this is just a safe default, in train.py its override to gpu
         seed              = 42,
         log_dir           = "logs",
         checkpoint_dir    = "checkpoints",
@@ -210,11 +218,16 @@ def _fast_config() -> TrainerConfig:
         env_config        = _default_env(K=50),
         gnn_config        = GNNConfig(hidden_dim=64, num_layers=2, dropout=0.1),
         policy_config     = _default_policy(),
-        ppo_config        = PPOConfig(n_epochs=2, batch_size=32, learning_rate=3e-4),
+        ppo_config        = PPOConfig(
+            n_epochs        = 2,
+            batch_size      = 64,
+            learning_rate   = 3e-4,
+            value_coef      = 0.05,   # scaled down for large episode returns
+        ),
         curriculum_config = CurriculumConfig(
-            k_stages=[50, 10, 2],
-            promotion_threshold=0.3,
-            promotion_window=10,
+            k_stages            = [50, 20, 10, 5, 2],
+            promotion_threshold = 30.0,   # calibrated to actual reward scale
+            promotion_window    = 20,     # require sustained performance
         ),
     )
 
@@ -227,12 +240,12 @@ def _full_config() -> TrainerConfig:
     """
     return TrainerConfig(
         run_name          = "probe_placement_full",
-        total_iterations  = 1000,
+        total_iterations  = 10000,
         rollout_len       = 512,
         log_interval      = 10,
         eval_interval     = 50,
         save_interval     = 50,
-        device            = "cpu",
+        device            = "cpu", # this is just a safe default, in train.py its override to gpu
         seed              = 42,
         log_dir           = "logs",
         checkpoint_dir    = "checkpoints",
