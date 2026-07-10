@@ -153,6 +153,8 @@ class RewardOutput:
     removal_risk:    float
     covered_slos:    List[int] = field(default_factory=list)
     blind_slos:      List[int] = field(default_factory=list)
+    violated_slos:          List[int] = field(default_factory=list)  # all violations (coverable)
+    covered_violation_slos: List[int] = field(default_factory=list)  # violations observed
 
 
 # ---------------------------------------------------------------------------
@@ -246,13 +248,19 @@ def compute_reward(inp: RewardInput, cfg: RewardConfig) -> RewardOutput:
 
     # ── Term (3): Blind violation penalty  −μ · Σ_k w_k · blind_violation(k, t) ──
     blind_slos: List[int] = []
+    violated_slos: List[int] = []          # all violations this step (coverable)
+    covered_violation_slos: List[int] = []  # violations that WERE observed
     blind_weight_sum = 0.0
     for slo in SLO_CATALOG:
         if slo.id not in inp.episode_graph.coverable_slos:
             continue
-        if _violation(slo.id, inp.sli_values) and not _covered(slo.id, inp.probe_set):
-            blind_weight_sum += slo.weight
-            blind_slos.append(slo.id)
+        if _violation(slo.id, inp.sli_values):
+            violated_slos.append(slo.id)
+            if _covered(slo.id, inp.probe_set):
+                covered_violation_slos.append(slo.id)
+            else:
+                blind_weight_sum += slo.weight
+                blind_slos.append(slo.id)
     blind_penalty = -cfg.mu * blind_weight_sum
 
     # ── Term (4): Risk-weighted removal penalty  −ρ · removal_risk(v, t) ──────
@@ -273,6 +281,8 @@ def compute_reward(inp: RewardInput, cfg: RewardConfig) -> RewardOutput:
         removal_risk=risk_penalty,
         covered_slos=covered_slos,
         blind_slos=blind_slos,
+        violated_slos=violated_slos,
+        covered_violation_slos=covered_violation_slos,
     )
 
 

@@ -92,7 +92,7 @@ SLO_CATALOG: List[SLO] = [
         metric="failure_rate",
         threshold=0.5,     # percent
         op="<=",
-        weight= 1,  #0.5,
+        weight= 1,          #0.5,
         nodes=["reservation"],
     ),
     SLO(

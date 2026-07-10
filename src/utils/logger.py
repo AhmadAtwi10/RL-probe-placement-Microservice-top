@@ -18,6 +18,7 @@ Public API
 """
 
 import json
+import math
 import os
 import time
 from dataclasses import asdict
@@ -87,8 +88,12 @@ class Logger:
         curriculum_info : dict
             From CurriculumScheduler.step().
         episode_metrics : dict
-            Keys: mean_reward, mean_ep_len, mean_coverage,
-                  mean_blind_rate, n_episodes.
+            From EpisodeTracker.aggregate(). Keys include: mean_reward,
+            mean_ep_len, mean_coverage (binary), mean_coverage_frac,
+            mean_blind_rate, mean_detection_rate, mean_blind_viol_rate,
+            mean_n_violations, mean_probe_count, survival_rate,
+            mean_num_nodes, mean_num_probeable, n_episodes.
+            Violation-ratio metrics may be NaN when no violations occurred.
         """
         elapsed = time.time() - self._start_time
 
@@ -111,43 +116,59 @@ class Logger:
             **{f"ep_{k}": v for k, v in episode_metrics.items()},
         }
 
+        # Sanitise non-finite values (NaN/Inf) → None so the JSONL stays
+        # valid JSON (NaN is not part of the JSON spec and breaks strict parsers).
+        record = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                  for k, v in record.items()}
+
         # JSON Lines
         self._jsonl_file.write(json.dumps(record) + "\n")
         self._jsonl_file.flush()
 
         # TensorBoard — grouped into sections using tag/name format
         if self._tb_writer is not None:
+            def _tb(tag, val, step=iteration):
+                # skip None / NaN / Inf so TB curves don't break
+                if val is None:
+                    return
+                if isinstance(val, float) and not math.isfinite(val):
+                    return
+                self._tb_writer.add_scalar(tag, val, step)
+
             # ── Episode metrics ──────────────────────────────────────────
             ep = episode_metrics
-            self._tb_writer.add_scalar("episode/mean_reward",      ep.get("mean_reward",      0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_weighted_coverage",    ep.get("mean_coverage",    0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_blind_rate",  ep.get("mean_blind_rate",  0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_probe_count", ep.get("mean_probe_count", 0.0), iteration)
-            self._tb_writer.add_scalar("episode/survival_rate",    ep.get("survival_rate",    0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_ep_len",      ep.get("mean_ep_len",      0.0), iteration)
-            self._tb_writer.add_scalar("episode/n_episodes",       ep.get("n_episodes",       0),   iteration)
-            self._tb_writer.add_scalar("episode/mean_num_nodes",     ep.get("mean_num_nodes",     0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_num_probeable", ep.get("mean_num_probeable", 0.0), iteration)
-            self._tb_writer.add_scalar("episode/mean_detection_rate",ep.get("mean_detection_rate", 1.0), iteration)
+            _tb("episode/mean_reward",       ep.get("mean_reward"))
+            _tb("episode/coverage_any",      ep.get("mean_coverage"))       # binary: ≥1 SLO covered
+            _tb("episode/coverage_frac",     ep.get("mean_coverage_frac"))  # |covered|/|coverable|
+            _tb("episode/blind_rate",        ep.get("mean_blind_rate"))     # steps with ≥1 blind viol
+            _tb("episode/detection_rate",    ep.get("mean_detection_rate"))    # covered/total violations
+            _tb("episode/blind_violation_rate", ep.get("mean_blind_viol_rate"))# blind/total violations
+            _tb("episode/mean_n_violations", ep.get("mean_n_violations"))
+            _tb("episode/mean_probe_count",  ep.get("mean_probe_count"))
+            _tb("episode/survival_rate",     ep.get("survival_rate"))
+            _tb("episode/mean_ep_len",       ep.get("mean_ep_len"))
+            _tb("episode/n_episodes",        ep.get("n_episodes"))
+            _tb("episode/mean_num_nodes",     ep.get("mean_num_nodes"))
+            _tb("episode/mean_num_probeable", ep.get("mean_num_probeable"))
             # ── PPO losses ───────────────────────────────────────────────
-            self._tb_writer.add_scalar("ppo/total_loss",    ppo_stats.total_loss,    iteration)
-            self._tb_writer.add_scalar("ppo/policy_loss",   ppo_stats.policy_loss,   iteration)
-            self._tb_writer.add_scalar("ppo/value_loss",    ppo_stats.value_loss,    iteration)
-            self._tb_writer.add_scalar("ppo/entropy",       ppo_stats.entropy,       iteration)
+            _tb("ppo/total_loss",    ppo_stats.total_loss)
+            _tb("ppo/policy_loss",   ppo_stats.policy_loss)
+            _tb("ppo/value_loss",    ppo_stats.value_loss)
+            _tb("ppo/entropy",       ppo_stats.entropy)
             # ── PPO diagnostics ──────────────────────────────────────────
-            self._tb_writer.add_scalar("ppo/approx_kl",     ppo_stats.approx_kl,     iteration)
-            self._tb_writer.add_scalar("ppo/clip_fraction", ppo_stats.clip_fraction, iteration)
-            self._tb_writer.add_scalar("ppo/explained_var", ppo_stats.explained_var, iteration)
+            _tb("ppo/approx_kl",     ppo_stats.approx_kl)
+            _tb("ppo/clip_fraction", ppo_stats.clip_fraction)
+            _tb("ppo/explained_var", ppo_stats.explained_var)
             # ── Curriculum ───────────────────────────────────────────────
             ci = curriculum_info
-            self._tb_writer.add_scalar("curriculum/K",             ci.get("K",            50),           iteration)
-            self._tb_writer.add_scalar("curriculum/stage",         ci.get("stage",        0),            iteration)
-            self._tb_writer.add_scalar("curriculum/learning_rate", ci.get("lr",           3e-4),         iteration)
-            self._tb_writer.add_scalar("curriculum/entropy_coef",  ci.get("entropy_coef", 0.05),         iteration)
-            self._tb_writer.add_scalar("curriculum/promoted",      float(ci.get("promoted", False)),     iteration)
+            _tb("curriculum/K",             ci.get("K"))
+            _tb("curriculum/stage",         ci.get("stage"))
+            _tb("curriculum/learning_rate", ci.get("lr"))
+            _tb("curriculum/entropy_coef",  ci.get("entropy_coef"))
+            _tb("curriculum/promoted",      float(ci.get("promoted", False)))
             # ── Meta ─────────────────────────────────────────────────────
-            self._tb_writer.add_scalar("meta/env_steps", env_steps, iteration)
-            self._tb_writer.add_scalar("meta/elapsed_s", elapsed,   iteration)
+            _tb("meta/env_steps", env_steps)
+            _tb("meta/elapsed_s", elapsed)
 
     def print_summary(
         self,
@@ -161,17 +182,22 @@ class Logger:
         """Print a human-readable summary to stdout."""
         elapsed = time.time() - self._start_time
         pct     = 100 * iteration / max(total_iters, 1)
+        em      = episode_metrics
+
+        def _f(x):  # nan-safe short formatter for violation ratios
+            return "  n/a" if (x is None or (isinstance(x, float) and math.isnan(x))) else f"{x:.3f}"
 
         print(
             f"[{iteration:5d}/{total_iters}] ({pct:5.1f}%) "
             f"steps={env_steps:7,d} | "
-            f"R={episode_metrics.get('mean_reward', 0.0):7.3f} | "
-            f"Wcov={episode_metrics.get('mean_coverage', 0.0):.3f} | "
-            f"blind={episode_metrics.get('mean_blind_rate', 0.0):.3f} | "
-            f"probes={episode_metrics.get('mean_probe_count', 0.0):.1f}"
-            f"/{episode_metrics.get('mean_num_probeable', 0.0):.0f}"
-            f"(n={episode_metrics.get('mean_num_nodes', 0.0):.0f}) | "
-            f"surv={episode_metrics.get('survival_rate', 0.0):.2f} | "
+            f"R={em.get('mean_reward', 0.0):7.3f} | "
+            f"covF={em.get('mean_coverage_frac', 0.0):.3f} | "
+            f"det={_f(em.get('mean_detection_rate'))} | "
+            f"blindV={_f(em.get('mean_blind_viol_rate'))} | "
+            f"probes={em.get('mean_probe_count', 0.0):.1f}"
+            f"/{em.get('mean_num_probeable', 0.0):.0f}"
+            f"(n={em.get('mean_num_nodes', 0.0):.0f}) | "
+            f"surv={em.get('survival_rate', 0.0):.2f} | "
             f"L={ppo_stats.total_loss:7.4f} "
             f"(pol={ppo_stats.policy_loss:.4f} "
             f"val={ppo_stats.value_loss:.4f} "
@@ -181,7 +207,6 @@ class Logger:
             f"K={curriculum_info.get('K', '?')} "
             f"stage={curriculum_info.get('stage', 0)} | "
             f"t={elapsed:.0f}s"
-            f"det={episode_metrics.get('mean_detection_rate', 1.0):.3f} | "
         )
 
     def close(self) -> None:

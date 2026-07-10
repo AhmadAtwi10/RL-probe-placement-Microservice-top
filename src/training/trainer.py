@@ -160,12 +160,16 @@ class EpisodeTracker:
     def reset_current(self):
         self._reward        = 0.0
         self._length        = 0
-        self._coverage      = 0.0   # fraction of steps with >= 1 SLO covered
-        self._blind         = 0.0   # fraction of steps with >= 1 blind violation
+        self._coverage      = 0.0   # fraction of steps with >= 1 SLO covered (binary)
+        self._blind         = 0.0   # fraction of steps with >= 1 blind violation (binary)
         self._probe_sum     = 0.0   # sum of probe counts per step
         self._survived      = False # did this episode reach T without exceeding K
         self._num_nodes     = 0     # present nodes in this episode graph
         self._num_probeable = 0     # probeable nodes in this episode graph
+        self._num_coverable = 0     # coverable SLOs in this episode graph (set by Trainer)
+        self._cov_frac_sum  = 0.0   # Σ_t |covered| / |coverable|  (dynamic-denominator coverage)
+        self._total_viol    = 0     # Σ_t total violations (coverable)
+        self._covered_viol  = 0     # Σ_t observed violations
 
     def step(self, reward: float, info: dict) -> None:
         self._reward     += reward
@@ -174,16 +178,32 @@ class EpisodeTracker:
         if rb is not None:
             self._coverage += 1.0 if len(rb.covered_slos) > 0 else 0.0
             self._blind    += 1.0 if len(rb.blind_slos)   > 0 else 0.0
+            # Dynamic-denominator fractional coverage (|covered| / |coverable|)
+            denom = max(self._num_coverable, 1)
+            self._cov_frac_sum += len(rb.covered_slos) / denom
+            # Violation counts for detection / blind-violation rates
+            self._total_viol   += len(rb.violated_slos)
+            self._covered_viol += len(rb.covered_violation_slos)
         probe_set = info.get("probe_set", set())
         self._probe_sum += len(probe_set)
 
     def end_episode(self, survived: bool = False) -> None:
         L = max(self._length, 1)
+        if self._total_viol > 0:
+            detection_rate  = self._covered_viol / self._total_viol
+            blind_viol_rate = 1.0 - detection_rate
+        else:
+            detection_rate  = float("nan")   # no violations occurred this episode
+            blind_viol_rate = float("nan")
         self.completed.append({
             "reward":        self._reward,
             "length":        self._length,
             "coverage":      self._coverage / L,
             "blind_rate":    self._blind    / L,
+            "coverage_frac": self._cov_frac_sum / L,
+            "detection_rate":       detection_rate,
+            "blind_violation_rate": blind_viol_rate,
+            "n_violation_events":   self._total_viol,
             "probe_count":   self._probe_sum / L,
             "survived":      float(survived),
             "num_nodes":     self._num_nodes,
@@ -198,18 +218,29 @@ class EpisodeTracker:
                 "mean_reward":        0.0,
                 "mean_ep_len":        0.0,
                 "mean_coverage":      0.0,
+                "mean_coverage_frac": 0.0,
                 "mean_blind_rate":    0.0,
+                "mean_detection_rate":  float("nan"),
+                "mean_blind_viol_rate": float("nan"),
+                "mean_n_violations":  0.0,
                 "mean_probe_count":   0.0,
                 "survival_rate":      0.0,
                 "mean_num_nodes":     0.0,
                 "mean_num_probeable": 0.0,
                 "n_episodes":         0,
             }
+        _det   = np.array([e["detection_rate"]       for e in self.completed], dtype=float)
+        _bviol = np.array([e["blind_violation_rate"] for e in self.completed], dtype=float)
+        _nanmean = lambda a: float(np.nanmean(a)) if np.any(~np.isnan(a)) else float("nan")
         result = {
             "mean_reward":        float(np.mean([e["reward"]        for e in self.completed])),
             "mean_ep_len":        float(np.mean([e["length"]        for e in self.completed])),
             "mean_coverage":      float(np.mean([e["coverage"]      for e in self.completed])),
+            "mean_coverage_frac": float(np.mean([e["coverage_frac"] for e in self.completed])),
             "mean_blind_rate":    float(np.mean([e["blind_rate"]    for e in self.completed])),
+            "mean_detection_rate":  _nanmean(_det),
+            "mean_blind_viol_rate": _nanmean(_bviol),
+            "mean_n_violations":  float(np.mean([e["n_violation_events"] for e in self.completed])),
             "mean_probe_count":   float(np.mean([e["probe_count"]   for e in self.completed])),
             "survival_rate":      float(np.mean([e["survived"]      for e in self.completed])),
             "mean_num_nodes":     float(np.mean([e["num_nodes"]     for e in self.completed])),
@@ -438,6 +469,7 @@ class Trainer:
                 # Record graph size for the new episode
                 self.tracker._num_nodes     = self._ep.num_nodes
                 self.tracker._num_probeable = self._ep.num_probeable
+                self.tracker._num_coverable = len(self._ep.coverable_slos)
                 last_value = 0.0
             else:
                 self._obs = obs_next
@@ -463,3 +495,4 @@ class Trainer:
         # Keep tracker informed of current episode graph size
         self.tracker._num_nodes     = self._ep.num_nodes
         self.tracker._num_probeable = self._ep.num_probeable
+        self.tracker._num_coverable = len(self._ep.coverable_slos)

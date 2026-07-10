@@ -18,8 +18,10 @@ Collected during a single deterministic or stochastic episode:
   blind_rate       : fraction of steps with at least one blind violation
   probe_efficiency : coverage_rate / max(mean_probe_count, 1)
                      — coverage per unit of probe cost
-  weighted_coverage: mean over steps of Σ_{k covered} w_k / Σ_k w_k
-                     — coverage weighted by SLO importance
+  weighted_coverage: mean over steps of Σ_{k covered} w_k / Σ_{k coverable} w_k
+                     — coverage weighted by SLO importance, with the
+                     denominator taken over SLOs coverable this episode
+                     (dynamic; excludes SLOs whose candidate node was perturbed out)
   slo_coverage     : List[float] length NUM_SLOS
                      per-SLO fraction of steps where SLO k is covered
   slo_blind        : List[float] length NUM_SLOS
@@ -71,7 +73,7 @@ class EpisodeResult:
     coverage_rate      : float   fraction of steps with ≥1 SLO covered
     blind_rate         : float   fraction of steps with ≥1 blind violation
     probe_efficiency   : float   coverage_rate / max(mean_probe_count, 1)
-    weighted_coverage  : float   importance-weighted coverage rate
+    weighted_coverage  : float   importance-weighted coverage rate (dynamic denom)
     slo_coverage       : List[float]  per-SLO coverage fractions (NUM_SLOS,)
     slo_blind          : List[float]  per-SLO blind violation fractions
     """
@@ -86,6 +88,11 @@ class EpisodeResult:
     weighted_coverage: float
     slo_coverage:      List[float] = field(default_factory=lambda: [0.0]*NUM_SLOS)
     slo_blind:         List[float] = field(default_factory=lambda: [0.0]*NUM_SLOS)
+    # --- new fractional / violation-based metrics ---
+    coverage_frac:        float = 0.0            # mean_t |covered| / |coverable|  (dynamic denom)
+    detection_rate:       float = float("nan")   # Σ_t covered_viol / Σ_t total_viol  (nan if no violations)
+    blind_violation_rate: float = float("nan")   # Σ_t blind_viol   / Σ_t total_viol  (= 1 − detection_rate)
+    n_violation_events:   int   = 0              # Σ_t (number of coverable-SLO violations)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +134,15 @@ class AggregateMetrics:
     mean_weighted_cov:   float
     std_weighted_cov:    float
 
+    # --- new fractional / violation-based metrics ---
+    mean_coverage_frac:   float = 0.0
+    std_coverage_frac:    float = 0.0
+    mean_detection_rate:  float = float("nan")   # averaged over episodes that had violations
+    std_detection_rate:   float = float("nan")
+    mean_blind_viol_rate: float = float("nan")
+    std_blind_viol_rate:  float = float("nan")
+    n_episodes_with_violations: int = 0
+
     # Per-SLO means (length NUM_SLOS)
     mean_slo_coverage:   List[float] = field(default_factory=lambda: [0.0]*NUM_SLOS)
     mean_slo_blind:      List[float] = field(default_factory=lambda: [0.0]*NUM_SLOS)
@@ -160,6 +176,15 @@ def aggregate(results: List[EpisodeResult]) -> AggregateMetrics:
     slo_blind = [float(np.mean([r.slo_blind[k]   for r in results]))
                  for k in range(NUM_SLOS)]
 
+    # Violation-based rates: average only over episodes that actually had
+    # violations (episodes with none carry nan and are ignored by nanmean).
+    _det   = np.array([r.detection_rate       for r in results], dtype=float)
+    _bviol = np.array([r.blind_violation_rate for r in results], dtype=float)
+    _n_with_viol = int(sum(1 for r in results if r.n_violation_events > 0))
+
+    def _nanmean(a): return float(np.nanmean(a)) if np.any(~np.isnan(a)) else float("nan")
+    def _nanstd(a):  return float(np.nanstd(a))  if np.any(~np.isnan(a)) else float("nan")
+
     return AggregateMetrics(
         n_episodes         = len(results),
         mean_reward        = _mean("total_reward"),
@@ -179,6 +204,13 @@ def aggregate(results: List[EpisodeResult]) -> AggregateMetrics:
         std_probe_eff      = _std("probe_efficiency"),
         mean_weighted_cov  = _mean("weighted_coverage"),
         std_weighted_cov   = _std("weighted_coverage"),
+        mean_coverage_frac = _mean("coverage_frac"),
+        std_coverage_frac  = _std("coverage_frac"),
+        mean_detection_rate  = _nanmean(_det),
+        std_detection_rate   = _nanstd(_det),
+        mean_blind_viol_rate = _nanmean(_bviol),
+        std_blind_viol_rate  = _nanstd(_bviol),
+        n_episodes_with_violations = _n_with_viol,
         mean_slo_coverage  = slo_cov,
         mean_slo_blind     = slo_blind,
     )
@@ -205,6 +237,12 @@ def format_summary(agg: AggregateMetrics) -> str:
         f"  Blind rate     : {agg.mean_blind_rate:.3f} ± {agg.std_blind_rate:.3f}",
         f"  Probe eff.     : {agg.mean_probe_eff:.3f} ± {agg.std_probe_eff:.3f}",
         f"  Weighted cov.  : {agg.mean_weighted_cov:.3f} ± {agg.std_weighted_cov:.3f}",
+        f"  Coverage frac  : {agg.mean_coverage_frac:.3f} ± {agg.std_coverage_frac:.3f}"
+        f"   (covered/coverable SLOs per step)",
+        f"  Detection rate : {agg.mean_detection_rate:.3f} ± {agg.std_detection_rate:.3f}"
+        f"   (covered/total violations; {agg.n_episodes_with_violations}/{agg.n_episodes} eps had violations)",
+        f"  Blind v. rate  : {agg.mean_blind_viol_rate:.3f} ± {agg.std_blind_viol_rate:.3f}"
+        f"   (blind/total violations)",
         f"{'─'*55}",
         f"  Per-SLO coverage / blind rate:",
     ]

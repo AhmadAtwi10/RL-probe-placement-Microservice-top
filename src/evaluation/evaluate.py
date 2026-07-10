@@ -51,8 +51,10 @@ class EvalConfig:
     device : str
         "cpu" or "cuda".
     seed : int
-        Base seed for evaluation environments.
-        Each episode uses seed + episode_index for reproducibility.
+        Base seed for the evaluation run. The episode-graph builder is seeded
+        once with this value, so the sequence of (increasingly perturbed)
+        episode graphs is reproducible. Each episode's workload is seeded with
+        seed + episode_index, giving distinct but reproducible SLI traces.
     verbose : bool
         If True, print per-episode summaries.
     """
@@ -98,23 +100,38 @@ def evaluate(
 
     results: List[EpisodeResult] = []
 
+    # ── Single environment for the whole eval run ────────────────────────
+    # The episode-graph builder is a Markov chain: its FIRST draw is always the
+    # un-perturbed full base graph, and perturbations only appear from the second
+    # draw onward. Creating a fresh env per episode (the previous behaviour) reset
+    # that chain every time, so every evaluation episode ran on the full 24-node
+    # graph and never exercised degraded topologies — making dynamic-denominator
+    # metrics identical to fixed-denominator ones. Reusing one env lets the chain
+    # advance across episodes, matching how training draws graphs.
+    #   • graph_seed = config.seed  → reproducible graph chain, seeded once.
+    #   • workload_seed = None      → each reset draws a fresh workload from the
+    #     env's np_random, which reset(seed=…) reseeds per episode below, giving
+    #     distinct-yet-reproducible workloads. (If workload_seed were fixed here,
+    #     every episode would replay identical SLI traces.)
+    env_cfg = ProbeEnvConfig(
+        episode_length         = config.env_config.episode_length,
+        blind_violation_budget = config.env_config.blind_violation_budget,
+        min_failures           = config.env_config.min_failures,
+        max_failures           = config.env_config.max_failures,
+        reward_config          = config.env_config.reward_config,
+        window_size            = config.env_config.window_size,
+        graph_seed             = config.seed,
+        workload_seed          = None,
+        diurnal_amplitude      = config.env_config.diurnal_amplitude,
+    )
+    env = ProbeEnv(env_cfg)
+
     for ep_idx in range(config.n_episodes):
 
-        # Each episode gets a unique seed for reproducibility
-        ep_seed = config.seed + ep_idx
-        env_cfg = ProbeEnvConfig(
-            episode_length         = config.env_config.episode_length,
-            blind_violation_budget = config.env_config.blind_violation_budget,
-            min_failures           = config.env_config.min_failures,
-            max_failures           = config.env_config.max_failures,
-            reward_config          = config.env_config.reward_config,
-            window_size            = config.env_config.window_size,
-            graph_seed             = ep_seed,
-            workload_seed          = ep_seed,
-            diurnal_amplitude      = config.env_config.diurnal_amplitude,
-        )
-        env = ProbeEnv(env_cfg)
-        obs, _ = env.reset()
+        # Distinct, reproducible workload per episode (reseeds np_random); the
+        # graph-builder chain advances by one episode on each reset(). Episode 0
+        # is the full base graph; episodes 1+ are perturbed samples of it.
+        obs, _ = env.reset(seed=config.seed + ep_idx)
         ep      = env.current_graph
 
         # ── Per-step accumulators ─────────────────────────────────────
@@ -124,6 +141,9 @@ def evaluate(
         covered_steps: List[bool] = []
         blind_steps:   List[bool] = []
         weighted_covs: List[float] = []
+        coverage_fracs: List[float] = []      # |covered| / |coverable| per step (dynamic denom)
+        sum_total_viol   = 0                  # pooled Σ_t total violations
+        sum_covered_viol = 0                  # pooled Σ_t observed violations
 
         # Per-SLO step counters
         slo_covered_steps = [0] * NUM_SLOS
@@ -152,9 +172,23 @@ def evaluate(
             covered_steps.append(len(covered_slos) > 0)
             blind_steps.append(len(blind_slos) > 0)
 
-            # Weighted coverage at this step
-            w_cov = sum(SLO_CATALOG[k].weight for k in covered_slos)
-            weighted_covs.append(w_cov / _TOTAL_WEIGHT)
+            # Weighted coverage at this step.
+            # Denominator is the total importance WEIGHT of SLOs that are
+            # coverable this episode (dynamic) — not the fixed sum over all 6.
+            # This avoids penalising the agent for SLOs whose candidate node
+            # was perturbed out of the graph and is therefore unobservable.
+            coverable   = ep.coverable_slos
+            w_cov       = sum(SLO_CATALOG[k].weight for k in covered_slos)
+            w_coverable = sum(SLO_CATALOG[k].weight for k in coverable) or 1.0
+            weighted_covs.append(w_cov / w_coverable)
+
+            # Unweighted fractional coverage, same dynamic denominator (by count)
+            n_coverable = max(len(coverable), 1)
+            coverage_fracs.append(len(covered_slos) / n_coverable)
+
+            # Pooled violation counts (for detection / blind-violation rates)
+            sum_total_viol   += len(rb.violated_slos)
+            sum_covered_viol += len(rb.covered_violation_slos)
 
             # Per-SLO
             for k in covered_slos:
@@ -178,6 +212,14 @@ def evaluate(
         slo_cov_rates  = [slo_covered_steps[k] / T for k in range(NUM_SLOS)]
         slo_blind_rates = [slo_blind_steps[k]   / T for k in range(NUM_SLOS)]
 
+        coverage_frac  = float(np.mean(coverage_fracs)) if coverage_fracs else 0.0
+        if sum_total_viol > 0:
+            detection_rate  = sum_covered_viol / sum_total_viol
+            blind_viol_rate = 1.0 - detection_rate
+        else:
+            detection_rate  = float("nan")   # no violations occurred this episode
+            blind_viol_rate = float("nan")
+
         result = EpisodeResult(
             total_reward      = total_reward,
             episode_length    = step,
@@ -190,6 +232,10 @@ def evaluate(
             weighted_coverage = weighted_cov,
             slo_coverage      = slo_cov_rates,
             slo_blind         = slo_blind_rates,
+            coverage_frac        = coverage_frac,
+            detection_rate       = detection_rate,
+            blind_violation_rate = blind_viol_rate,
+            n_violation_events   = sum_total_viol,
         )
         results.append(result)
 
